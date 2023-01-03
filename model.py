@@ -18,7 +18,7 @@ from sklearn.metrics.pairwise import pairwise_distances
 
 # In[4]:
 
-
+''' Commented by Renju 3-Jan-22. Have added new code from line 75 onwards.
 class ItemBasedRecommender():
     def __init__(self, ratings_dataframe):
         #Read supplied dataframe into an instance variable called reviews
@@ -71,6 +71,71 @@ class ItemBasedRecommender():
         recommended_product_list=self.reviews[self.reviews.product_id.isin(self.predicted_ratings.loc[user_id].T.sort_values(ascending=False).index[:num_of_items])].product_id.unique().tolist()
         return self.product_id_mapping[self.product_id_mapping.product_id.isin(recommended_product_list)].name.tolist()
 
+'''
+class ItemBasedRecommender():
+
+    def __init__(self, ratings_dataframe):
+        #Read supplied dataframe into an instance variable called reviews
+        self.reviews=ratings_dataframe[['name', 'reviews_rating','reviews_username']]
+        self.reviews=self.reviews[-self.reviews.reviews_username.isna()]
+        
+        
+        #Create a separate dataframe of user ids
+        self.reviews['user_id']=self.reviews.groupby(['reviews_username']).ngroup()
+        self.user_id_mapping=self.reviews[['user_id','reviews_username']].drop_duplicates()
+
+        #Create a separate dataframe of product ids
+        self.reviews['product_id']=self.reviews.groupby(['name']).ngroup()
+        self.product_id_mapping=self.reviews[['product_id','name']].drop_duplicates()
+        
+        # Clean up the reviews dataframe
+        self.reviews=self.reviews[['user_id','product_id','reviews_rating']]
+        self.reviews.drop_duplicates(inplace=True)
+        self.reviews.rename({'reviews_rating':'rating'}, axis=1, inplace=True)
+        
+        
+        #If the same user has given the same product 2 ratings - take the average
+        for user, product in self.reviews.groupby(['user_id','product_id']).count()[self.reviews.groupby(['user_id','product_id']).count().rating>1].index:
+            mean_rating=np.mean(self.reviews[((self.reviews.user_id==user)& (self.reviews.product_id==product))].rating)
+            self.reviews=self.reviews[-((self.reviews.user_id==user)& (self.reviews.product_id==product))]
+            self.reviews=self.reviews.append({'user_id':int(user),'product_id':int(product),'rating':mean_rating}, ignore_index=True)
+        #Averaging logic end        
+
+        #Create a dummy reviews dataframe to allow us to not recommend products a user has already rated
+        self.train_dummy = self.reviews.copy()
+        self.train_dummy['rating']=self.train_dummy['rating'].apply(lambda x: 0 if x>0 else 1)
+        self.train_dummy=self.train_dummy.pivot(index='user_id', columns='product_id', values='rating').fillna(1)
+                
+        #Create the item correlation matrix
+        self.data_pivot=self.reviews.pivot(index='user_id', columns='product_id', values='rating').T
+        self.mean=np.nanmean(self.data_pivot,axis=1)
+        self.subtracted=(self.data_pivot.T-self.mean).T
+        
+        self.item_correlation=1-pairwise_distances(self.subtracted.fillna(0), metric='cosine')
+        self.item_correlation[np.isnan(self.item_correlation)]=0
+        self.item_correlation[self.item_correlation<0]=0
+        
+        #Predict ratings
+        self.predicted_ratings=np.dot( (self.data_pivot.fillna(0)).T,self.item_correlation)
+        
+        #Multiply ratings with the dummy dataframe to remove products already rated by the user
+        self.predicted_ratings=np.multiply(self.predicted_ratings, self.train_dummy)
+        
+        self.predicted_ratings=pd.DataFrame(self.predicted_ratings.T)
+        self.predicted_ratings['product_id']= self.data_pivot.T.columns
+        self.predicted_ratings.set_index('product_id', inplace=True)
+        self.predicted_ratings=self.predicted_ratings.T
+        
+        del(self.data_pivot, self.item_correlation,self.mean, self.subtracted)
+        
+    def recommend(self,user_name, num_of_items=20):
+        'Parameters\n----------\nuser_name: string, required\n The name of the user to search for;\nnum_of_items: integer, optional\n Number of products to display, default is 20;\n\n'
+        if(len(self.user_id_mapping[self.user_id_mapping.reviews_username==user_name].user_id)>0):
+            user_id=self.user_id_mapping[self.user_id_mapping.reviews_username==user_name].user_id.item()
+        else:
+            raise Exception('User Not Found!')
+        recommended_product_list=self.reviews[self.reviews.product_id.isin(self.predicted_ratings.loc[user_id].T.sort_values(ascending=False).index[:num_of_items])].product_id.unique().tolist()
+        return self.product_id_mapping[self.product_id_mapping.product_id.isin(recommended_product_list)].name.tolist()
 
 # In[5]:
 
